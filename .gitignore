@@ -9,6 +9,11 @@ data/raw/
 data/cache/
 *.parquet
 
+# Cached graph objects
+graph/cache/
+*.pkl
+*.gpickle
+
 # Models
 *.pt
 *.pth
