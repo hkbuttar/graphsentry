@@ -1,6 +1,8 @@
-# graphsentry
+# GraphSentry — Fraud Detection on the Elliptic Bitcoin Transaction Network
 
-Fraud detection on the Elliptic Bitcoin transaction network. Combines classical graph analytics (PageRank, Louvain community detection) with a GraphSAGE GNN for illicit-node classification, benchmarked against XGBoost. FastAPI backend, SvelteKit dashboard. Runs entirely on CPU.
+**By Harleen Kaur Buttar**
+
+Combines classical graph analytics (PageRank, Louvain community detection) with a GraphSAGE GNN for illicit-node classification, benchmarked against XGBoost. FastAPI backend, SvelteKit dashboard. Runs entirely on CPU.
 
 ## Status
 
@@ -51,6 +53,15 @@ An exploratory semi-supervised extension: can a classifier recover usable signal
 - **Calibration check first**: 5-fold cross-validated, out-of-fold predictions on the labeled training data show that when the model is >=95% confident a node is illicit, it's right **99.71%** of the time; when it's <=5% confident (i.e. confident-licit), it's right **99.83%** of the time. This is the only honest evidence available on trustworthiness, since it's checked against real labels.
 - Applied to the actual unknown nodes: **74.8%** (117,590 of 157,205) get a confident pseudo-label. Notably, the *pseudo*-illicit rate among previously-unknown nodes runs the opposite direction of the real labels (6.9% for train-time unknowns vs. 8.1% for test-time unknowns, versus 11.6%/6.5% for the real labels) -- a reminder that Elliptic's human labelers selected which transactions to label non-randomly, so "labeled" and "unknown" were never the same population to begin with.
 - **Consistency check**: since there's no ground truth to validate the pseudo-labels against directly, they're instead checked against an independent signal -- the Step 3 finding that illicit nodes cluster into specific Louvain communities. Pseudo-illicit nodes fall into those same "high-risk" communities **20.0%** of the time vs. **12.3%** for pseudo-licit nodes -- the same direction as the real-label result (45.4% vs. 13.4%) but noticeably weaker. Structural feature averages tell a similar story: pseudo-illicit nodes have lower in/out-degree than pseudo-licit nodes (consistent with real illicit nodes), but their clustering coefficient sits closer to the licit profile than the real illicit one does. Read plainly: self-training recovers a real but diluted version of the true pattern -- suggestive corroboration, not proof the pseudo-labels are reliable.
+- **Threshold sensitivity** (`features/threshold_sensitivity.py`): is the 0.95/0.05 confidence cutoff a good choice, or an arbitrary one? Swept 0.90/0.95/0.99 over the same out-of-fold predictions:
+
+  | threshold | coverage (illicit) | precision (illicit) | coverage (licit) | precision (licit) |
+  |---|---|---|---|---|
+  | 0.90 | 10.80% | 99.44% | 86.56% | 99.78% |
+  | 0.95 | 10.54% | 99.71% | 85.19% | 99.83% |
+  | 0.99 | 9.54%  | 99.93% | 78.63% | 99.95% |
+
+  Precision is already >99.4% at the loosest threshold tested, so tightening further buys very little: going from 0.95 to 0.99 costs 6.6 points of licit coverage (thousands of nodes) for a 0.12-point precision gain, and about 1 point of illicit coverage for a 0.22-point gain. Diminishing returns set in past 0.95, most visibly on the licit side. 0.95 is a reasonable, data-justified point on this curve, not an arbitrary round number.
 
 ## Tech stack (so far)
 
@@ -64,7 +75,7 @@ An exploratory semi-supervised extension: can a classifier recover usable signal
 graphsentry/
 ├── data/          # Elliptic loaders, cached parquet
 ├── graph/         # NetworkX construction, centrality, community detection
-├── features/      # feature engineering (structural + node attributes), pseudo-labeling
+├── features/      # feature engineering (structural + node attributes), pseudo-labeling, threshold sensitivity
 ├── models/        # baseline (XGBoost), GNN (GraphSAGE/GCN via PyG) -- in progress
 ├── backend/       # FastAPI -- in progress
 ├── frontend/      # SvelteKit dashboard -- in progress
