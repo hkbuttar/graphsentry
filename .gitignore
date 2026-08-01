@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Data
+data/raw/
+data/cache/
+*.parquet
+
+# Models
+*.pt
+*.pth
+*.xgb
+
+# Node / frontend
+node_modules/
+frontend/.svelte-kit/
+frontend/build/
+frontend/.vercel/
+
+# Env / secrets
+.env
+.env.*
+
+# OS
+.DS_Store
+
+# Notebooks
+.ipynb_checkpoints/
