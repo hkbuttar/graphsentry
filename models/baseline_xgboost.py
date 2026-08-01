@@ -115,6 +115,30 @@ least one of these six features in its top 10 -- except the recency-weighted,
 threshold-tuned configuration (the best-performing one so far), whose top 10
 avoided all six. That's the basis for excluding them here rather than as a
 speculative guess: `EXCLUDED_DRIFTED_FEATURES` below.
+
+--------------------------------------------------------------------------------
+`community` was tried as an exclusion too -- tested and reverted
+--------------------------------------------------------------------------------
+Checked directly: of the 206 Louvain community IDs present in the train
+period (steps 1-34) and the 109 present in the test period (steps 35-49), the
+overlap is zero -- a structural guarantee (not just a drift pattern), since
+communities can't span time steps at all (no edges cross time steps -- see
+graph/graph_builder.py). A model conditioning on the literal community ID is
+therefore learning something tied to a specific value certain to never recur
+at test time, which reads like a clean argument for dropping it, the same way
+the six drifted features were dropped above.
+
+Tested directly rather than left as a plausible-sounding argument: dropping
+`community` alongside the six drifted features cost 0.11 F1 points (0.817 ->
+0.709), mostly via a large precision drop (0.953 -> 0.680); PR-AUC barely
+moved (0.804 -> 0.797). So `community` IS kept in the model, despite the
+sound theoretical case against it -- the empirical result disagreed, and it
+takes priority. Likely explanation: XGBoost doesn't ignore unseen categories
+at prediction time, it routes them down a learned default split direction --
+so even though no specific community ID transfers, something about how the
+model was shaped to handle an unfamiliar community in general still carries
+signal. Reported as a genuine tension between theory and result, not resolved
+by picking whichever one sounds better.
 """
 
 from __future__ import annotations
@@ -124,7 +148,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-from sklearn.metrics import average_precision_score, f1_score, precision_recall_curve, precision_score, recall_score
 
 from features.build_features import (
     DEFAULT_TRAIN_MAX_STEP,
@@ -132,6 +155,7 @@ from features.build_features import (
     get_labeled_subset,
     temporal_train_test_split,
 )
+from models.metrics import DEFAULT_THRESHOLD, compute_metrics, select_threshold
 
 CACHE_DIR = Path(__file__).parent / "cache"
 MODEL_PATH = CACHE_DIR / "xgboost_model.json"
@@ -148,8 +172,6 @@ TRAIN_MIN_STEP = 1
 # how late its time_step falls in the fixed 1-34 training window.
 RECENCY_WEIGHT_MIN = 0.5
 RECENCY_WEIGHT_MAX = 1.5
-
-DEFAULT_THRESHOLD = 0.5
 
 # Identified by models/feature_drift_audit.py: KS statistic > 0.9 between the
 # train-period and test-period distribution, a distinct cluster clearly
@@ -181,15 +203,6 @@ def _sample_weights(df: pd.DataFrame) -> np.ndarray:
     scale_pos_weight = (y == 0).sum() / (y == 1).sum()
     class_weight = np.where(y == 1, scale_pos_weight, 1.0)
     return class_weight * _recency_weight(df["time_step"])
-
-
-def _select_threshold(y_val: pd.Series, proba_val: np.ndarray) -> float:
-    """Picks the probability cutoff that maximizes F1 on out-of-sample
-    validation predictions, instead of assuming 0.5 -- see module docstring."""
-    precisions, recalls, thresholds = precision_recall_curve(y_val, proba_val)
-    f1s = 2 * precisions * recalls / (precisions + recalls + 1e-12)
-    best_idx = f1s[:-1].argmax()  # last precision/recall point has no threshold
-    return float(thresholds[best_idx])
 
 
 def _make_model(n_estimators: int = 500, early_stopping: bool = True) -> xgb.XGBClassifier:
@@ -237,7 +250,7 @@ def train_baseline(use_cache: bool = True) -> tuple[xgb.XGBClassifier, pd.DataFr
           f"{VAL_MIN_STEP}-34 (validation) picked {best_rounds} boosting rounds")
 
     val_proba = finder.predict_proba(X_val)[:, 1]
-    threshold = _select_threshold(y_val, val_proba)
+    threshold = select_threshold(y_val.to_numpy(), val_proba)
     print(f"Threshold selected on steps {VAL_MIN_STEP}-34 out-of-sample predictions: {threshold:.4f}")
 
     X_train, y_train = _prepare_xy(train_df)
@@ -253,22 +266,11 @@ def train_baseline(use_cache: bool = True) -> tuple[xgb.XGBClassifier, pd.DataFr
 
 
 def evaluate(model: xgb.XGBClassifier, df: pd.DataFrame, split_name: str, threshold: float = DEFAULT_THRESHOLD) -> dict:
-    """Precision/recall/F1 (at the given threshold) + PR-AUC (threshold-
-    independent). These four numbers are the only ones this project reports
-    as "the result" -- see module docstring for why accuracy is excluded."""
+    """Thin wrapper around models.metrics.compute_metrics -- see that module
+    for why accuracy is excluded and precision/recall/F1/PR-AUC are used."""
     X, y = _prepare_xy(df)
     proba = model.predict_proba(X)[:, 1]
-    pred = (proba >= threshold).astype(int)
-
-    metrics = {
-        "split": split_name,
-        "n": len(df),
-        "precision": precision_score(y, pred, zero_division=0),
-        "recall": recall_score(y, pred, zero_division=0),
-        "f1": f1_score(y, pred, zero_division=0),
-        "pr_auc": average_precision_score(y, proba),
-    }
-    return metrics
+    return compute_metrics(y.to_numpy(), proba, split_name, threshold=threshold)
 
 
 def predict_all_labeled(model: xgb.XGBClassifier, use_cache: bool = True) -> pd.DataFrame:
