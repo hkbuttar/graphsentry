@@ -112,9 +112,13 @@ def compute_louvain_communities(graph: nx.DiGraph) -> pd.Series:
     return pd.Series(partition, name="community")
 
 
-def check_illicit_clustering(ds, communities: pd.Series) -> pd.DataFrame:
+def check_illicit_clustering(ds, communities: pd.Series, verbose: bool = True) -> pd.DataFrame:
     """Build the per-community illicit-rate report and print the honest summary
-    described in the module docstring. Returns the full per-community table."""
+    described in the module docstring. Returns the full per-community table.
+
+    verbose=False suppresses the printout -- used when this table is reused as
+    an input to another analysis (e.g. features/pseudo_label.py) that has its
+    own reporting and would otherwise duplicate this output."""
     df = ds.nodes[["label"]].join(communities)
     grouped = df.groupby("community")["label"].value_counts().unstack(fill_value=0)
     grouped = grouped.rename(columns={1: "illicit", 0: "licit", -1: "unknown"})
@@ -133,16 +137,17 @@ def check_illicit_clustering(ds, communities: pd.Series) -> pd.DataFrame:
     nodes_in_high_risk = high_risk["size"].sum()
     total_nodes = grouped["size"].sum()
 
-    print(f"Baseline illicit rate among labeled nodes: {baseline:.4f}")
-    print(f"Communities with labeled nodes >= {MIN_LABELED_FOR_RATE}: "
-          f"{(grouped['labeled'] >= MIN_LABELED_FOR_RATE).sum()} of {len(grouped)} total")
-    print(f"Communities with illicit_rate > {HIGH_RISK_RATE_MULTIPLIER}x baseline: {len(high_risk)}")
-    print(f"  -> hold {illicit_in_high_risk}/{total_illicit} "
-          f"({100 * illicit_in_high_risk / total_illicit:.1f}%) of all illicit nodes")
-    print(f"  -> but only {nodes_in_high_risk}/{total_nodes} "
-          f"({100 * nodes_in_high_risk / total_nodes:.1f}%) of all nodes")
-    print("\nConclusion: illicit nodes cluster disproportionately into a "
-          "minority of Louvain communities in this dataset.")
+    if verbose:
+        print(f"Baseline illicit rate among labeled nodes: {baseline:.4f}")
+        print(f"Communities with labeled nodes >= {MIN_LABELED_FOR_RATE}: "
+              f"{(grouped['labeled'] >= MIN_LABELED_FOR_RATE).sum()} of {len(grouped)} total")
+        print(f"Communities with illicit_rate > {HIGH_RISK_RATE_MULTIPLIER}x baseline: {len(high_risk)}")
+        print(f"  -> hold {illicit_in_high_risk}/{total_illicit} "
+              f"({100 * illicit_in_high_risk / total_illicit:.1f}%) of all illicit nodes")
+        print(f"  -> but only {nodes_in_high_risk}/{total_nodes} "
+              f"({100 * nodes_in_high_risk / total_nodes:.1f}%) of all nodes")
+        print("\nConclusion: illicit nodes cluster disproportionately into a "
+              "minority of Louvain communities in this dataset.")
 
     return grouped
 

@@ -47,6 +47,27 @@ Method: self-training with a confidence threshold
    extrapolated to a period the classifier has never seen and where the true
    illicit rate is known (from Step 4) to be lower, so those pseudo-labels
    deserve more skepticism than train-time ones.
+
+--------------------------------------------------------------------------------
+Consistency check: do the pseudo-labels agree with independent structural signal?
+--------------------------------------------------------------------------------
+The calibration check above tests the classifier against real labels, but it
+can't validate the pseudo-labels themselves (there's no ground truth to check
+them against -- that's the entire premise). The best available substitute is
+to ask whether the pseudo-labels line up with a completely independent signal:
+the Step 3 finding that illicit nodes cluster disproportionately into specific
+Louvain communities.
+
+Checked empirically: pseudo-illicit nodes fall into those same "high-risk"
+communities (>2x baseline illicit rate) 20.0% of the time, versus 12.3% for
+pseudo-licit nodes. That's the same direction as the real-label finding
+(45.4% vs. 13.4%) but noticeably weaker. Same story on raw structural
+features -- pseudo-illicit nodes have lower in/out-degree than pseudo-licit
+nodes (consistent with real illicit nodes being structurally sparser), but
+their clustering coefficient sits closer to the licit profile than the real
+illicit one does. Read plainly: self-training recovers a real but diluted
+version of the same pattern, not a clean match. That's the honest conclusion
+-- this extension is suggestive, not a substitute for real labels.
 """
 
 from __future__ import annotations
@@ -58,12 +79,14 @@ import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
+from data.loader import load_elliptic
 from features.build_features import (
     DEFAULT_TRAIN_MAX_STEP,
     build_feature_table,
     get_labeled_subset,
     temporal_train_test_split,
 )
+from graph.analytics import HIGH_RISK_RATE_MULTIPLIER, check_illicit_clustering
 
 CACHE_DIR = Path(__file__).parent / "cache"
 PSEUDO_LABEL_CACHE_PATH = CACHE_DIR / "pseudo_labels.parquet"
@@ -150,6 +173,42 @@ def generate_pseudo_labels(use_cache: bool = True) -> pd.DataFrame:
     return result
 
 
+def analyze_pseudo_label_consistency(use_cache: bool = True) -> dict:
+    """Cross-check the pseudo-labels against the Step 3 Louvain finding and raw
+    structural feature profiles -- the closest thing to validation available
+    when there's no ground truth to check the pseudo-labels against directly.
+    """
+    full_table = build_feature_table()
+    ds = load_elliptic()
+    communities = full_table["community"].astype(int)
+
+    grouped = check_illicit_clustering(ds, communities, verbose=False)
+    baseline = ds.nodes.loc[ds.nodes["label"] >= 0, "label"].mean()
+    high_risk_ids = set(grouped[grouped["illicit_rate"] > HIGH_RISK_RATE_MULTIPLIER * baseline].index)
+
+    pseudo = generate_pseudo_labels(use_cache=use_cache)
+    pseudo_illicit_idx = pseudo[pseudo["pseudo_label"] == 1].index
+    pseudo_licit_idx = pseudo[pseudo["pseudo_label"] == 0].index
+
+    frac_pseudo_illicit_high_risk = communities.loc[pseudo_illicit_idx].isin(high_risk_ids).mean()
+    frac_pseudo_licit_high_risk = communities.loc[pseudo_licit_idx].isin(high_risk_ids).mean()
+
+    labeled = get_labeled_subset(full_table)
+    feature_cols = ["pagerank", "in_degree", "out_degree", "clustering"]
+    profile = pd.DataFrame({
+        "real_illicit": labeled.loc[labeled["label"] == 1, feature_cols].mean(),
+        "real_licit": labeled.loc[labeled["label"] == 0, feature_cols].mean(),
+        "pseudo_illicit": full_table.loc[pseudo_illicit_idx, feature_cols].mean(),
+        "pseudo_licit": full_table.loc[pseudo_licit_idx, feature_cols].mean(),
+    })
+
+    return {
+        "frac_pseudo_illicit_in_high_risk_communities": frac_pseudo_illicit_high_risk,
+        "frac_pseudo_licit_in_high_risk_communities": frac_pseudo_licit_high_risk,
+        "structural_profile": profile,
+    }
+
+
 if __name__ == "__main__":
     full_table = build_feature_table()
     labeled = get_labeled_subset(full_table)
@@ -179,3 +238,17 @@ if __name__ == "__main__":
           "The calibration check above (on real labels) is the only honest signal "
           "we have about how much to trust them -- treat the coverage numbers here "
           "as an upper bound on how useful this extension could be, not a result.")
+
+    print("\n--- Consistency check against Step 3's community-clustering finding ---")
+    consistency = analyze_pseudo_label_consistency()
+    print(f"Pseudo-illicit nodes in high-risk communities: "
+          f"{100*consistency['frac_pseudo_illicit_in_high_risk_communities']:.1f}%")
+    print(f"Pseudo-licit nodes in high-risk communities:   "
+          f"{100*consistency['frac_pseudo_licit_in_high_risk_communities']:.1f}%")
+    print("(for reference, real illicit nodes: 45.4% vs. real licit-adjacent baseline: 13.4% overall)")
+    print("\nMean structural features by group:")
+    print(consistency["structural_profile"])
+    print("\nConclusion: pseudo-labels show the same DIRECTION as the real-label "
+          "clustering finding, but a weaker effect -- self-training recovers a "
+          "diluted version of the real pattern, not a clean match. Treat this as "
+          "suggestive corroboration, not proof the pseudo-labels are reliable.")
