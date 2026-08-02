@@ -18,12 +18,15 @@ not just an arbitrary first-available one).
 Subsampling within a time step
 --------------------------------------------------------------------------------
 Even a single time step's component (up to ~7,880 nodes) is too large to
-render smoothly. If the component exceeds `max_nodes`, ALL illicit-labeled
-nodes in it are kept (they're rare and the whole point of the dashboard),
-and the remaining budget is filled with a random sample of the rest -- rather
-than a uniform random sample of everyone, which would likely wash out the
-illicit nodes entirely given they're a small minority even within a single
-time step. The induced subgraph on just the sampled node set is returned, so
+render smoothly. If the component exceeds `max_nodes`, illicit-labeled nodes
+are prioritized (they're rare and the whole point of the dashboard) and the
+remaining budget is filled with a random sample of the rest -- rather than a
+uniform random sample of everyone, which would likely wash out the illicit
+nodes entirely given they're a small minority even within a single time
+step. If illicit nodes alone exceed `max_nodes` (some time steps have
+hundreds), they're sampled down to the cap too -- `max_nodes` is a hard
+limit on the response size, not just a target. The induced subgraph on just
+the sampled node set is returned, so
 edges only appear between two nodes that are both present in the response.
 """
 
@@ -53,9 +56,15 @@ def get_network(request: Request, time_step: int = DEFAULT_TIME_STEP, max_nodes:
 
     if truncated:
         illicit_ids = list(full_table.loc[component_ids].index[full_table.loc[component_ids, "label"] == 1])
+        rng = random.Random(RANDOM_SEED)
+        if len(illicit_ids) > max_nodes:
+            # even the illicit nodes alone exceed the cap -- sample down to
+            # it rather than ignoring max_nodes entirely (a real bug caught
+            # by tests/test_backend.py: time_step 32 alone has 342 illicit
+            # nodes, well over a small max_nodes like 20)
+            illicit_ids = rng.sample(illicit_ids, max_nodes)
         remaining_budget = max(max_nodes - len(illicit_ids), 0)
         other_ids = [i for i in component_ids if i not in set(illicit_ids)]
-        rng = random.Random(RANDOM_SEED)
         sampled_other = rng.sample(other_ids, min(remaining_budget, len(other_ids)))
         node_ids = set(illicit_ids) | set(sampled_other)
     else:

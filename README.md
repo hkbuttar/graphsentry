@@ -148,8 +148,8 @@ graphsentry/
 ├── models/        # baseline (XGBoost), GNN (GraphSAGE/GCN via PyG), model comparison
 ├── backend/       # FastAPI: /network, /predictions, /metrics, /node/{id}
 ├── frontend/      # SvelteKit dashboard
-├── notebooks/      # research notebook
-├── tests/
+├── notebooks/     # research.ipynb -- pre-executed narrative walkthrough
+├── tests/         # pytest suite (structural invariants, metrics, model logic, API)
 ├── requirements.txt
 └── README.md
 ```
@@ -191,6 +191,15 @@ uvicorn backend.main:app --reload
 ```
 
 Then visit `http://127.0.0.1:8000/docs` for interactive API docs, or try `http://127.0.0.1:8000/network`.
+
+Run the test suite (each test file skips gracefully if the cached artifacts it needs haven't been generated yet, rather than failing opaquely). Make sure the venv is active first -- a bare `pytest` on your PATH may resolve to an unrelated global installation that doesn't have this project's dependencies:
+
+```
+source .venv/bin/activate
+pytest tests/ -v
+```
+
+Read `notebooks/research.ipynb` for a pre-executed, narrative walkthrough of the whole project with inline charts -- it imports and reuses the same modules as everything above rather than recomputing anything with different logic. To re-run it yourself: `python -m ipykernel install --user --name graphsentry` once, then open it in Jupyter/VS Code and select the "graphsentry" kernel.
 
 ## Limitations (so far)
 
