@@ -2,6 +2,8 @@
 
 **By Harleen Kaur Buttar**
 
+**Live demo:** [graphsentry.vercel.app](https://graphsentry.vercel.app/)
+
 Combines classical graph analytics (PageRank, Louvain community detection) with a GraphSAGE GNN for illicit-node classification, benchmarked against XGBoost. FastAPI backend, SvelteKit dashboard. Runs entirely on CPU.
 
 ## Motivation
