@@ -125,18 +125,39 @@ This is also a common, defensible finding in the graph-fraud literature, not a s
 
 A thin FastAPI wrapper around everything above -- every endpoint reads from cached artifacts loaded once at startup (`backend/state.py`: the graph pickle, the merged feature table, both models' cached predictions), never recomputes graph analytics or retrains a model per request. This is the same "one source of truth" principle as `models/compare_models.py` extended to the API layer.
 
-- **`GET /network`** -- one time step's transaction subgraph as nodes/edges JSON (`time_step` query param, default 32 -- 342 illicit nodes of 4,525, a visually meaningful default). Even a single time step can be too large to render smoothly, so if it exceeds `max_nodes` (default 300), every illicit-labeled node is kept (they're the whole point of the dashboard and would otherwise get diluted by random sampling) and the remaining budget is filled with a random sample of the rest; the response is the induced subgraph on just that sampled set.
+- **`GET /network`** -- one time step's transaction subgraph as nodes/edges JSON (`time_step` query param, default 32 -- 342 illicit nodes of 4,525, a visually meaningful default). Even a single time step can be too large to render smoothly, so if it exceeds `max_nodes` (API default 300; the frontend requests 500 -- see Frontend section below for why), every illicit-labeled node is kept (they're the whole point of the dashboard and would otherwise get diluted by random sampling) and the remaining budget is filled with a random sample of the rest; the response is the induced subgraph on just that sampled set.
 - **`GET /predictions`** -- per-node probabilities from both models, filterable by `model`, `min_proba`, and `limit` so the frontend can narrow the payload server-side instead of shipping all 46,564 labeled nodes on every request.
 - **`GET /metrics`** -- the exact Step 7 comparison table, computed by calling `models/compare_models.py`'s `compare()` function directly rather than re-deriving precision/recall/F1/PR-AUC here -- the dashboard cannot show numbers that drift from what's documented as the project's result.
 - **`GET /node/{id}`** -- single-node lookup: raw + structural features, both models' predicted probabilities, and direct in/out-neighbors (read straight from the loaded graph, respecting direction the same way every other part of this project does: in-neighbors paid this node, out-neighbors were paid by it).
 
 CORS is controlled by an `ALLOWED_ORIGINS` environment variable (comma-separated), defaulting to common local SvelteKit/Vite dev ports -- in production (Step 10) this points at the deployed Vercel URL instead, so the backend never needs a code change to point at a different frontend.
 
+## Frontend (`frontend/`)
+
+A SvelteKit + TypeScript dashboard (Tailwind CSS for styling), built as one cohesive page rather than several stitched-together routes -- the network view, node lookup, and model comparison table all live on `/` and react to the same shared state.
+
+**Why Svelte stores, specifically.** `frontend/src/lib/stores.ts` holds four pieces of state (`selectedNodeId`, `activeModel`, `probabilityThreshold`, `activeTimeStep`) shared across otherwise-unrelated components -- the network graph, the node lookup panel, and the controls bar all read and write these directly. This is a genuinely different model from React: there's no prop-drilling through a common ancestor and no separate state-management library (Context, Redux, Zustand) reached for once state needs to cross component boundaries. A Svelte store is just a value living outside the component tree; any component subscribes by prefixing it with `$` (e.g. `$selectedNodeId`), and the compiler generates the subscribe/unsubscribe boilerplate. Clicking a node in the graph updates `selectedNodeId`; the node lookup panel -- a sibling with no direct relationship to the graph component -- reacts on its own.
+
+**Network visualization** (`NetworkGraph.svelte`): D3 (`d3-force`) computes node positions; Svelte owns the DOM, rendering nodes/edges through ordinary `{#each}` blocks fed by plain (non-reactive) arrays that the simulation mutates each tick, then copied into a `$state` array for the template. Feeding Svelte 5's reactive proxies directly into d3-force was deliberately avoided -- d3 expects to freely mutate plain objects every tick, and mixing that with Svelte's proxy wrapper is an easy source of subtle bugs. Nodes are colored by the active model's predicted probability against the threshold slider (red = predicted illicit, blue = predicted licit, gray = no prediction available for unlabeled nodes), with a black ring marking nodes that are *actually* illicit -- so agreement and disagreement between prediction and ground truth are both visible at once, not just the prediction alone.
+
+**Subsampling, tuned after actually looking at it.** The curated "interesting" time steps in `Controls.svelte` were deliberately chosen for high illicit counts (up to 342, to make the visualization meaningful) -- but the backend's own default render cap (300) meant illicit nodes alone could fill the entire budget, leaving zero room for a licit or unlabeled node to ever appear, so the legend's other colors were never actually demonstrated. Caught by manually driving the app in a real browser (Playwright), not just type-checking: the frontend now requests 500 nodes instead of 300, leaving headroom for real color variety alongside every illicit node.
+
+**A real bug caught the same way**: `NodePanel.svelte` threw `Cannot read properties of null (reading 'toFixed')` on initial load, before any node was even selected. A `key in node.features` guard directly inside a keyed `{#each}` block was not a reliable guarantee that the looked-up value was a number by the time `.toFixed()` ran -- an each-block nested inside a conditional branch could observe a stale/transitional value during a store update. Fixed by computing a filtered, pre-validated list (`$derived`, keeping only entries where `typeof value === 'number'`) before the template ever sees it, rather than guarding ad-hoc inside the each-block.
+
+Run it with:
+
+```
+cd frontend
+npm install
+cp .env.example .env   # set PUBLIC_API_BASE_URL if the backend isn't on the default
+npm run dev
+```
+
 ## Tech stack (so far)
 
 - **Data / graph**: pandas, networkx, python-louvain, pyarrow (parquet caching)
 - **Modeling**: XGBoost, PyTorch + PyTorch Geometric (GraphSAGE)
-- **Serving / UI**: FastAPI, SvelteKit
+- **Serving / UI**: FastAPI, SvelteKit + TypeScript + Tailwind CSS, d3-force
 
 ## Repo structure
 
@@ -147,7 +168,7 @@ graphsentry/
 ├── features/      # feature engineering (structural + node attributes), pseudo-labeling, threshold sensitivity
 ├── models/        # baseline (XGBoost), GNN (GraphSAGE/GCN via PyG), model comparison
 ├── backend/       # FastAPI: /network, /predictions, /metrics, /node/{id}
-├── frontend/      # SvelteKit dashboard
+├── frontend/      # SvelteKit dashboard: network graph, node lookup, model comparison
 ├── notebooks/     # research.ipynb -- pre-executed narrative walkthrough
 ├── tests/         # pytest suite (structural invariants, metrics, model logic, API)
 ├── requirements.txt
