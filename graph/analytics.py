@@ -7,25 +7,51 @@ graph/cache/structural_features.parquet. Step 4 merges this with the 166 raw
 Elliptic features to build the full model input.
 
 --------------------------------------------------------------------------------
-Betweenness centrality: why it's only computed for ~4% of nodes
+Betweenness centrality: only the largest component -- tried full coverage,
+measurably worse for both models, reverted
 --------------------------------------------------------------------------------
 Betweenness centrality answers "how often does a shortest path between two
 other nodes pass through this one" -- for every node, that means running a
 shortest-path search from every other node (Brandes' algorithm: O(V*E) total).
-Across all 203,769 nodes that's not feasible in plain Python.
+Across all 203,769 nodes as one graph, that's not feasible in plain Python.
 
-It turns out this graph is not one connected mass -- confirmed in
-graph_builder.py, every edge stays within its own time step, so the graph is
-actually 49 separate weakly-connected components, one per time step, ranging
-from a few hundred to ~7,880 nodes. Exact betweenness on just the largest of
-those 49 components (7,880 nodes, 9,164 edges) took ~32 seconds. That is the
-"subsampled connected component" this step computes on: the single largest
-time step, in full, exactly (no further random sampling needed once the
-problem is reframed around the real per-time-step component sizes rather than
-the whole graph). Doing the same for all 49 components would take somewhere
-around 5-10 minutes total; that's not done here, so nodes outside the largest
-component get a NaN betweenness value in the feature table -- this is a real
-gap, not an oversight, and is called out again in the README limitations.
+Since the graph is 49 disjoint weakly-connected components (one per time
+step, confirmed in graph_builder.py -- no edges cross time steps), this
+module originally computed betweenness only for the single largest component
+(~32 seconds) and left the other ~96% of nodes as NaN. Step 6's GNN work
+found that the largest component happens to fall entirely within the TRAIN
+period, so every single TEST node got a constant placeholder value for this
+feature -- not just missing data, a structural blind spot in exactly the
+split being evaluated.
+
+That seemed like a clear bug to fix: compute betweenness exactly for every
+component (not an approximation -- a disconnected graph's betweenness is
+exactly the union of each component's own internal betweenness) and union
+the results. Timed at ~8.3 minutes, implemented, and tested end-to-end. The
+result: BOTH models got measurably worse. XGBoost test F1 dropped 0.817 ->
+0.728 (PR-AUC 0.804 -> 0.662); the GNN's test F1 dropped 0.659 -> 0.627
+(PR-AUC 0.631 -> 0.605). Betweenness jumped to the #2 most important
+XGBoost feature once every row had a real value, and that trust didn't
+transfer to test.
+
+Investigated rather than just reverted on sight: the first hypothesis was
+that per-component normalization (networkx normalizes betweenness by the
+size of whatever graph it's given, and each component is a different size)
+made values incomparable across components. Checked directly -- correlation
+between component size and mean/max betweenness within it is weak (0.09 /
+0.17) -- components of nearly identical size produced wildly different
+betweenness scales (e.g. two ~6,700-node components differed by 1000x in
+mean betweenness). So normalization isn't the main story; betweenness is
+better understood as a high-variance, topology-specific metric -- it reflects
+the particular chain/star/cluster shape of one time period's component, which
+is closer to a per-period idiosyncrasy than a durable, transferable pattern.
+Giving both models more of that idiosyncratic signal hurt more than the
+original missing-data gap did.
+
+Reverted to the largest-component-only version below -- the one that
+produced the best measured results for both models -- with this investigation
+kept here rather than erased, since the negative result and the (partially
+wrong) normalization hypothesis are both genuinely informative.
 
 --------------------------------------------------------------------------------
 Louvain community detection + the illicit-clustering check
@@ -92,9 +118,10 @@ def compute_clustering(graph: nx.DiGraph) -> pd.Series:
     return pd.Series(scores, name="clustering")
 
 
-def compute_betweenness_on_largest_component(graph: nx.DiGraph) -> pd.Series:
+def compute_betweenness(graph: nx.DiGraph) -> pd.Series:
     """Exact betweenness centrality, computed only on the largest of the 49
-    weakly-connected (per-time-step) components. See module docstring for why."""
+    weakly-connected (per-time-step) components. See module docstring for
+    why full per-component coverage was tried and reverted."""
     components = list(nx.weakly_connected_components(graph))
     largest = max(components, key=len)
     subgraph = graph.subgraph(largest).copy()
@@ -163,14 +190,14 @@ def build_structural_feature_table(use_cache: bool = True) -> pd.DataFrame:
     pagerank = compute_pagerank(graph)
     degrees = compute_degree_features(graph)
     clustering = compute_clustering(graph)
-    betweenness = compute_betweenness_on_largest_component(graph)
+    betweenness = compute_betweenness(graph)
     communities = compute_louvain_communities(graph)
 
     table = pd.DataFrame(index=ds.nodes.index)
     table["pagerank"] = pagerank
     table = table.join(degrees)
     table["clustering"] = clustering
-    table["betweenness"] = betweenness  # NaN for nodes outside the largest component
+    table["betweenness"] = betweenness  # full coverage -- see compute_betweenness docstring
     table["community"] = communities
 
     if use_cache:
