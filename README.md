@@ -153,6 +153,30 @@ cp .env.example .env   # set PUBLIC_API_BASE_URL if the backend isn't on the def
 npm run dev
 ```
 
+## Deployment
+
+Backend on [Render](https://render.com) (`render.yaml`), frontend on [Vercel](https://vercel.com) (SvelteKit deploys there natively via `@sveltejs/adapter-vercel`). Deploy order matters, since each side's config points at the other's URL.
+
+### The core challenge: the backend needs generated artifacts a fresh clone doesn't have
+
+The graph edge cache, merged feature table, and both models' trained predictions are all gitignored (they're large and fully reproducible from source, consistent with this project's "one source of truth" principle -- see Limitations). A fresh Render build starts with none of them. Rather than committing ~400-500MB of cache files to git or standing up separate cloud storage, **Render's build command re-runs the entire pipeline from the raw Kaggle data on every deploy** (`render.yaml`'s `buildCommand`): download data, build the graph, compute structural features, merge, train both models. This takes ~5-8 minutes but keeps every deploy fully reproducible and requires no infrastructure beyond Render and a Kaggle account.
+
+### Memory: build and runtime need genuinely different amounts, both measured directly rather than guessed
+
+- **Runtime (serving requests): ~1.07GB peak.** `backend/state.py` deliberately builds a lightweight, attribute-free graph from a small edge-list cache instead of loading `graph_builder.py`'s fully-attributed graph (which was measured at ~2.9GB) -- the backend only ever needs graph topology (`.subgraph()`, `.predecessors()`, `.successors()`), never per-node feature attributes, which come from the feature table instead. This is roughly a 2.7x memory reduction, found by actually profiling the backend rather than assuming the existing graph object was fine to reuse as-is.
+- **Build: ~2.95GB peak, measured directly** (`/usr/bin/time -l`). Higher than runtime because `graph_builder.py` and `graph.analytics.py` both construct the *fully* attributed graph at least once -- a deliberate Step 2 design choice (166 features attached to every node, for exploratory use like the research notebook), not something this deploy config tries to avoid, since it's a one-time, transient build cost rather than a permanently-running one.
+
+**Pick a Render plan with at least 4GB RAM** -- sized for the larger (build) figure with headroom, not the optimized runtime figure alone; a plan sized only for runtime would OOM on every single deploy.
+
+### Step-by-step
+
+1. **Get a Kaggle API token**: kaggle.com/settings -> API -> "Create New Token" (downloads a `kaggle.json` with a username and key).
+2. **Deploy the backend to Render** (connect this GitHub repo; Render detects `render.yaml` automatically). In the Render dashboard, set these environment variables (marked `sync: false` in `render.yaml`, meaning Render prompts for them manually rather than expecting them in the file):
+   - `KAGGLE_USERNAME`, `KAGGLE_KEY` -- from the token in step 1.
+   - `ALLOWED_ORIGINS` -- leave a placeholder for now (e.g. `http://localhost:5173`); it gets updated in step 4.
+3. **Deploy the frontend to Vercel** (import the same repo, set the root directory to `frontend/`). Set one environment variable in Vercel's dashboard: `PUBLIC_API_BASE_URL` = the Render backend's URL from step 2 (e.g. `https://graphsentry-api.onrender.com`).
+4. **Close the loop**: copy the deployed Vercel URL (e.g. `https://graphsentry.vercel.app`), go back to Render, and update `ALLOWED_ORIGINS` to that URL. Render restarts the service to pick up the new env var (no rebuild needed, since it's read at process startup, not at build time).
+
 ## Tech stack (so far)
 
 - **Data / graph**: pandas, networkx, python-louvain, pyarrow (parquet caching)
@@ -172,6 +196,7 @@ graphsentry/
 ├── notebooks/     # research.ipynb -- pre-executed narrative walkthrough
 ├── tests/         # pytest suite (structural invariants, metrics, model logic, API)
 ├── requirements.txt
+├── render.yaml    # Render deploy config for the backend
 └── README.md
 ```
 
@@ -183,15 +208,10 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Download the dataset (requires Kaggle credentials configured for `kagglehub`):
+Download the dataset (requires Kaggle credentials -- either `~/.kaggle/kaggle.json`, or `KAGGLE_USERNAME`/`KAGGLE_KEY` env vars, which is also what Render uses at build time; see Deployment below):
 
 ```
-python3 -c "import kagglehub; print(kagglehub.dataset_download('ellipticco/elliptic-data-set'))"
-```
-
-Copy the three CSVs into `data/raw/`, then:
-
-```
+python -m data.download        # idempotent -- skips if data/raw/ is already populated
 python -m data.loader          # sanity-check the raw data
 python -m graph.graph_builder  # build and cache the graph
 python -m graph.analytics      # compute structural features
@@ -229,6 +249,7 @@ Read `notebooks/research.ipynb` for a pre-executed, narrative walkthrough of the
 - The train/test class balance shifts over time (11.6% -> 6.5% illicit), so train-time and test-time metrics are not directly comparable to each other.
 - Even after removing the drifted features, baseline recall on test is 0.715 -- roughly 1 in 4 illicit test transactions still go undetected. Precision improved substantially, but this is not a solved problem.
 - The GNN underperforms the baseline on every metric (F1 0.659 vs. 0.817, PR-AUC 0.631 vs. 0.804). This is reported as the honest result of a genuinely tuned attempt (diagnosed, validation-swept, and cross-checked against two competing hypotheses about why), not an under-explored one.
+- Every Render deploy re-runs the full data pipeline from raw Kaggle data (~5-8 minutes) rather than reusing cached artifacts across deploys, and needs a Render plan with at least 4GB RAM to cover the build's peak memory (~2.95GB, measured) -- see Deployment. A persistent-disk or object-storage caching layer would speed up and cheapen redeploys, at the cost of another moving part.
 
 ## Future work
 

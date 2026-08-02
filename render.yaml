@@ -1,0 +1,62 @@
+# Render Blueprint for the GraphSentry backend. Deploy: connect this repo on
+# Render, it detects this file automatically. See README "Deployment" for the
+# full walkthrough (env var setup, memory sizing, deploy order with Vercel).
+#
+# --------------------------------------------------------------------------------
+# Why the build re-runs the entire pipeline, rather than shipping a prebuilt cache
+# --------------------------------------------------------------------------------
+# The backend depends on several generated artifacts (graph edge cache, merged
+# feature table, both trained models' predictions) that are all gitignored --
+# a fresh Render build starts with none of them. Rebuilding everything at
+# deploy time (rather than committing ~400-500MB of cache files to git, or
+# standing up separate cloud storage to hold them) keeps the deploy fully
+# reproducible and matches this project's own "one source of truth, nothing
+# fabricated" principle -- at the cost of a slower build (~5-8 minutes) and a
+# real dependency on Kaggle credentials being available at build time.
+#
+# --------------------------------------------------------------------------------
+# Memory: build vs. runtime need genuinely different amounts, both measured
+# --------------------------------------------------------------------------------
+# Runtime (serving requests): ~1.07GB peak. backend/state.py deliberately
+# builds a lightweight, attribute-free graph from a small edge-list cache
+# rather than loading graph_builder.py's fully-attributed graph.pkl (measured
+# at ~2.9GB) -- the backend only ever needs graph topology, never per-node
+# feature attributes (those come from the feature table instead). See
+# backend/state.py's docstring for the measurement and reasoning.
+#
+# Build (this file's buildCommand): ~2.95GB peak, measured directly. This is
+# higher than runtime because graph_builder.py and graph.analytics.py both
+# construct the FULL attributed graph (166 features per node) at least once
+# -- a deliberate Step 2 design choice for exploratory use (e.g. the research
+# notebook), not something this deploy config tries to avoid, since it's a
+# one-time, transient build cost rather than a permanently-running one.
+#
+# Pick a plan with at least 4GB RAM to comfortably cover the larger of the
+# two (build) with headroom -- a plan sized only for the optimized runtime
+# figure would OOM during every build.
+
+services:
+  - type: web
+    name: graphsentry-api
+    runtime: python
+    plan: standard # at least 4GB RAM -- see memory notes above; adjust to whatever Render's current plan names/tiers offer that much
+    buildCommand: >-
+      pip install -r requirements.txt &&
+      python -m data.download &&
+      python -m graph.graph_builder &&
+      python -m graph.analytics &&
+      python -m features.build_features &&
+      python -m models.baseline_xgboost &&
+      python -m models.gnn_graphsage
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.13
+      - key: PYTHONUNBUFFERED
+        value: "1" # unbuffered logs -- otherwise build output only appears in one burst at the end of the ~5-8 minute pipeline run
+      - key: KAGGLE_USERNAME
+        sync: false # set manually in the Render dashboard -- see README Deployment
+      - key: KAGGLE_KEY
+        sync: false # set manually in the Render dashboard -- see README Deployment
+      - key: ALLOWED_ORIGINS
+        sync: false # set to the deployed Vercel URL AFTER the frontend is deployed -- see README Deployment

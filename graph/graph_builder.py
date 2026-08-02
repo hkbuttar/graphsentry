@@ -55,6 +55,7 @@ from data.loader import EllipticDataset, load_elliptic
 
 CACHE_DIR = Path(__file__).parent / "cache"
 GRAPH_CACHE_PATH = CACHE_DIR / "graph.pkl"
+EDGES_CACHE_PATH = CACHE_DIR / "edges.parquet"
 
 
 def build_graph(ds: EllipticDataset, use_cache: bool = True) -> nx.DiGraph:
@@ -96,6 +97,24 @@ def build_graph(ds: EllipticDataset, use_cache: bool = True) -> nx.DiGraph:
     return graph
 
 
+def save_lightweight_edges(ds: EllipticDataset, use_cache: bool = True) -> pd.DataFrame:
+    """Caches just the edge list (txId1, txId2) as a small parquet file --
+    no per-node attributes, no networkx object. Exists for backend/state.py:
+    the backend only ever needs graph TOPOLOGY (subgraph extraction,
+    predecessors/successors), never node attributes (those come from the
+    feature table instead). Measured directly: loading the full attributed
+    graph.pkl costs ~2.9GB of RAM for the backend's purposes, versus ~257MB
+    for an attribute-free graph built from this file plus the feature table
+    it already loads for other endpoints -- see backend/state.py.
+    """
+    if use_cache and EDGES_CACHE_PATH.exists():
+        return pd.read_parquet(EDGES_CACHE_PATH)
+    if use_cache:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        ds.edges.to_parquet(EDGES_CACHE_PATH)
+    return ds.edges
+
+
 def time_step_summary(ds: EllipticDataset) -> pd.DataFrame:
     """Per-time-step node counts by class, to make the 49-snapshot structure concrete."""
     counts = ds.nodes.groupby("time_step")["label"].value_counts().unstack(fill_value=0)
@@ -127,6 +146,9 @@ if __name__ == "__main__":
 
     g = build_graph(dataset)
     print(f"\nGraph: {g.number_of_nodes()} nodes, {g.number_of_edges()} edges, directed={g.is_directed()}")
+
+    save_lightweight_edges(dataset)
+    print(f"Lightweight edge cache written to {EDGES_CACHE_PATH}")
 
     sample_node = next(iter(g.nodes))
     print(f"\nSample node {sample_node} attributes (first 5 shown):")

@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.state import GRAPH_CACHE_PATH
+from backend.state import EDGES_PATH
 from features.build_features import FULL_TABLE_CACHE_PATH
 from models.baseline_xgboost import PREDICTIONS_PATH as XGB_PREDICTIONS_PATH
 from models.gnn_graphsage import PREDICTIONS_PATH as GNN_PREDICTIONS_PATH
@@ -19,7 +19,7 @@ from tests.conftest import skip_if_missing
 
 @pytest.fixture(scope="module")
 def client():
-    skip_if_missing(GRAPH_CACHE_PATH, "python -m graph.graph_builder")
+    skip_if_missing(EDGES_PATH, "python -m graph.graph_builder")
     skip_if_missing(FULL_TABLE_CACHE_PATH, "python -m features.build_features")
     skip_if_missing(XGB_PREDICTIONS_PATH, "python -m models.baseline_xgboost")
     skip_if_missing(GNN_PREDICTIONS_PATH, "python -m models.gnn_graphsage")
