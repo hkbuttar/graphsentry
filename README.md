@@ -121,6 +121,17 @@ Both models' cached probabilities are loaded (no retraining) and scored with ide
 
 This is also a common, defensible finding in the graph-fraud literature, not a surprising one: once strong structural features (PageRank, community, degree, clustering) are already handed directly to a tree-based model, a GNN's main theoretical advantage -- learning structure implicitly through message passing -- has less room to add value. Worse, here it introduces a genuine liability: the GNN leans on graph structure that itself doesn't transfer across time as cleanly as standalone node features do, so it's *more* exposed to this dataset's real, documented distribution shift, not less. A feature-based model that already has good structural features handed to it directly is a hard bar to clear.
 
+## Backend (`backend/`)
+
+A thin FastAPI wrapper around everything above -- every endpoint reads from cached artifacts loaded once at startup (`backend/state.py`: the graph pickle, the merged feature table, both models' cached predictions), never recomputes graph analytics or retrains a model per request. This is the same "one source of truth" principle as `models/compare_models.py` extended to the API layer.
+
+- **`GET /network`** -- one time step's transaction subgraph as nodes/edges JSON (`time_step` query param, default 32 -- 342 illicit nodes of 4,525, a visually meaningful default). Even a single time step can be too large to render smoothly, so if it exceeds `max_nodes` (default 300), every illicit-labeled node is kept (they're the whole point of the dashboard and would otherwise get diluted by random sampling) and the remaining budget is filled with a random sample of the rest; the response is the induced subgraph on just that sampled set.
+- **`GET /predictions`** -- per-node probabilities from both models, filterable by `model`, `min_proba`, and `limit` so the frontend can narrow the payload server-side instead of shipping all 46,564 labeled nodes on every request.
+- **`GET /metrics`** -- the exact Step 7 comparison table, computed by calling `models/compare_models.py`'s `compare()` function directly rather than re-deriving precision/recall/F1/PR-AUC here -- the dashboard cannot show numbers that drift from what's documented as the project's result.
+- **`GET /node/{id}`** -- single-node lookup: raw + structural features, both models' predicted probabilities, and direct in/out-neighbors (read straight from the loaded graph, respecting direction the same way every other part of this project does: in-neighbors paid this node, out-neighbors were paid by it).
+
+CORS is controlled by an `ALLOWED_ORIGINS` environment variable (comma-separated), defaulting to common local SvelteKit/Vite dev ports -- in production (Step 10) this points at the deployed Vercel URL instead, so the backend never needs a code change to point at a different frontend.
+
 ## Tech stack (so far)
 
 - **Data / graph**: pandas, networkx, python-louvain, pyarrow (parquet caching)
@@ -135,7 +146,7 @@ graphsentry/
 ├── graph/         # NetworkX construction, centrality, community detection
 ├── features/      # feature engineering (structural + node attributes), pseudo-labeling, threshold sensitivity
 ├── models/        # baseline (XGBoost), GNN (GraphSAGE/GCN via PyG), model comparison
-├── backend/       # FastAPI
+├── backend/       # FastAPI: /network, /predictions, /metrics, /node/{id}
 ├── frontend/      # SvelteKit dashboard
 ├── notebooks/      # research notebook
 ├── tests/
@@ -172,6 +183,14 @@ python -m models.gnn_data               # build and inspect the PyG graph object
 python -m models.gnn_graphsage          # train and evaluate the GraphSAGE GNN
 python -m models.compare_models          # print the final XGBoost vs. GraphSAGE comparison
 ```
+
+Run the backend (requires all of the above to have been run at least once, so the cached artifacts it reads exist):
+
+```
+uvicorn backend.main:app --reload
+```
+
+Then visit `http://127.0.0.1:8000/docs` for interactive API docs, or try `http://127.0.0.1:8000/network`.
 
 ## Limitations (so far)
 
