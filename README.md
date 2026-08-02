@@ -106,6 +106,21 @@ Two internal design choices worth naming: (1) boosting-round selection uses a ne
 
 **Final GNN result: precision 0.809, recall 0.556, F1 0.659, PR-AUC 0.631 on the steps 35-49 test set -- below the XGBoost baseline (F1 0.817, PR-AUC 0.804) on every metric.** Stated plainly rather than tuned further to close the gap: on this dataset, with these features, the GNN does not beat a well-tuned feature-based baseline. This matches a common, defensible finding in the graph-fraud literature -- once strong structural features (pagerank, community, degree, clustering) are already available to a tree model directly, a GNN's main theoretical advantage (learning structure implicitly) has less room to add value, and here it adds a new failure mode instead: heavier reliance on graph structure that itself doesn't transfer across time as cleanly as node-level features do.
 
+## Results: XGBoost vs. GraphSAGE (`models/compare_models.py`)
+
+Both models' cached probabilities are loaded (no retraining) and scored with identical logic, so this table isn't two independently-computed numbers that happen to be placed side by side -- it's one comparison script reading one source of truth per model.
+
+| model | split | n | precision | recall | F1 | PR-AUC |
+|---|---|---|---|---|---|---|
+| XGBoost | train (1-34) | 29,894 | 0.9985 | 0.9763 | 0.9873 | 0.9997 |
+| GraphSAGE | train (1-34) | 29,894 | 0.9803 | 0.9330 | 0.9560 | 0.9930 |
+| **XGBoost** | **test (35-49)** | **16,670** | **0.9532** | **0.7147** | **0.8169** | **0.8044** |
+| **GraphSAGE** | **test (35-49)** | **16,670** | **0.8091** | **0.5559** | **0.6590** | **0.6313** |
+
+**The GNN does not beat the baseline -- not on precision, not on recall, not on F1, not on PR-AUC, on the test set that actually matters.** That's stated plainly rather than tuned toward a different answer: the GNN's weak first attempt was diagnosed rather than assumed fixable (early stopping wasn't the cause), validation-swept across four configurations, and cross-examined against two competing hypotheses for the gap -- one (neighborhood-shape drift) that didn't hold up under a direct check, and one (betweenness coverage) that did, in a more nuanced and occasionally counterintuitive way than expected (see GNN model section above for the full investigation). None of it closed the gap to the baseline.
+
+This is also a common, defensible finding in the graph-fraud literature, not a surprising one: once strong structural features (PageRank, community, degree, clustering) are already handed directly to a tree-based model, a GNN's main theoretical advantage -- learning structure implicitly through message passing -- has less room to add value. Worse, here it introduces a genuine liability: the GNN leans on graph structure that itself doesn't transfer across time as cleanly as standalone node features do, so it's *more* exposed to this dataset's real, documented distribution shift, not less. A feature-based model that already has good structural features handed to it directly is a hard bar to clear.
+
 ## Tech stack (so far)
 
 - **Data / graph**: pandas, networkx, python-louvain, pyarrow (parquet caching)
@@ -119,7 +134,7 @@ graphsentry/
 ├── data/          # Elliptic loaders, cached parquet
 ├── graph/         # NetworkX construction, centrality, community detection
 ├── features/      # feature engineering (structural + node attributes), pseudo-labeling, threshold sensitivity
-├── models/        # baseline (XGBoost), GNN (GraphSAGE/GCN via PyG)
+├── models/        # baseline (XGBoost), GNN (GraphSAGE/GCN via PyG), model comparison
 ├── backend/       # FastAPI
 ├── frontend/      # SvelteKit dashboard
 ├── notebooks/      # research notebook
@@ -155,6 +170,7 @@ python -m models.feature_drift_audit    # audit train/test feature distribution 
 python -m models.baseline_xgboost       # train and evaluate the XGBoost baseline
 python -m models.gnn_data               # build and inspect the PyG graph object
 python -m models.gnn_graphsage          # train and evaluate the GraphSAGE GNN
+python -m models.compare_models          # print the final XGBoost vs. GraphSAGE comparison
 ```
 
 ## Limitations (so far)

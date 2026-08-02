@@ -148,6 +148,7 @@ import torch
 import torch.nn.functional as F
 from torch_geometric.nn import SAGEConv
 
+from features.build_features import build_feature_table
 from models.gnn_data import build_pyg_data
 from models.metrics import compute_metrics, select_threshold
 
@@ -306,7 +307,10 @@ def predict_all_labeled(model: GraphSAGE, data, node_ids: pd.Index, use_cache: b
         proba = torch.sigmoid(model(data.x, data.edge_index)).numpy()
 
     labeled_mask = (data.train_mask | data.val_mask | data.test_mask).numpy()
-    result = pd.DataFrame(index=node_ids[labeled_mask])
+    labeled_ids = node_ids[labeled_mask]
+    full_table = build_feature_table()
+    result = pd.DataFrame(index=labeled_ids)
+    result["time_step"] = full_table.loc[labeled_ids, "time_step"]
     result["label"] = data.y.numpy()[labeled_mask]
     result["gnn_proba"] = proba[labeled_mask]
 
